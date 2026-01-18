@@ -1,0 +1,19 @@
+[project]
+name = "learn-torch"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=6.30.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.1",
+    "torch>=2.7.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.30.0",
+    "jupyter>=1.1.1",
+    "notebook>=7.4.5",
+]
