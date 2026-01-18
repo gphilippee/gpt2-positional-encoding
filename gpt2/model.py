@@ -31,13 +31,13 @@ class SinusoidalPositionalEncoding(nn.Module):
         div_term = torch.exp(torch.arange(0, config.n_embd, 2).float() * (-math.log(10000.0) / config.n_embd))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
+        pe = pe.unsqueeze(0) # shape (1, block_size, n_embd)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
         # x is torch.arange(0, t) (t)
-        # output is (t, n_embd)
-        return self.pe[:len(x)]
+        # output is (1, t, n_embd)
+        return self.pe[:, :len(x), :]
 
 
 class CausalSelfAttention(nn.Module):
@@ -121,13 +121,13 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd),
         )
 
-        match pe:
+        match config.pe:
             case PositionalEncoding.LEARNED:
-                wpe = nn.Embedding(config.block_size, config.n_embd)
+                modules['wpe'] = nn.Embedding(config.block_size, config.n_embd)
             case PositionalEncoding.SINUSOIDAL:
-                wpe = SinusoidalPositionalEnconding(config)
+                modules['wpe'] = SinusoidalPositionalEncoding(config)
             case PositionalEncoding.ROPE | PositionalEncoding.NOPE:
-                wpe = None
+                pass
 
         self.transformer = nn.ModuleDict(modules)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -159,12 +159,11 @@ class GPT(nn.Module):
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        
         if self.config.pe in (PositionalEncoding.ROPE, PositionalEncoding.NOPE):
             emb = tok_emb
-        elif self.config.pe == PositionalEncoding.SINUSOIDAL:
-            pos_emb = self.transformer.wpe.forward(pos)
         else:
-            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd) or (1, t, n_embd)
             emb = tok_emb + pos_emb
         
         x = self.transformer.drop(emb)
