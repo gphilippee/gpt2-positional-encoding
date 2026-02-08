@@ -8,8 +8,8 @@ from gpt2.model import GPTConfig, GPT
 # Hyperparameters
 batch_size = 64
 block_size = 256
-max_iters = 5000
-eval_interval = 500
+max_iters = 21
+eval_interval = 5
 learning_rate = 3e-4
 device = 'mps'
 eval_iters = 200
@@ -62,6 +62,17 @@ if __name__ == "__main__":
         if iter % eval_interval == 0 or iter == max_iters - 1:
             losses = estimate_loss()
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+            # save the model
+            model_path = f"ckpt_{iter}.pt"
+            checkpoint = {
+                'model': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'config': config,
+                'iter_num': iter,
+            }
+            print(f"saving checkpoint to {model_path}")
+            torch.save(checkpoint, model_path)
 
         # sample a batch of data
         xb, yb = get_batch(train_data, block_size, batch_size, device)

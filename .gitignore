@@ -8,3 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Pytorch weights
+*.pt
+
+# Others
+notebooks/
+input.txt

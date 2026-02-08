@@ -21,7 +21,7 @@ class GPTConfig:
     n_embd: int = 384
     dropout: float = 0.2
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit faster and better
-    pe: PositionalEncoding = PositionalEncoding.LEARNED
+    pe: PositionalEncoding = PositionalEncoding.NOPE
 
 class SinusoidalPositionalEncoding(nn.Module):
     def __init__(self, config: GPTConfig):
@@ -151,7 +151,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, full: bool = False):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is {self.config.block_size}"
@@ -175,6 +175,10 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+        elif full:
+            logits = self.lm_head(x)
+            # not targets, loss to None
+            loss = None
         else:
             # inference-only optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
@@ -206,5 +210,22 @@ class GPT(nn.Module):
             idx_next = torch.multinomial(probs, num_samples=1)
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
-
         return idx
+
+    def perplexity(self, idx: torch.Tensor) -> float:
+        sum_nll = 0
+        total = 0
+        for start in range(0, idx.size(1)-1, self.config.block_size):
+            end = min(idx.size(-1)-1, start+self.config.block_size)
+            targets = idx[:, start+1:end+1]
+            idx_cond = idx[:, start:end]
+            logits, _ = self(idx_cond, full=True)
+            probs = F.softmax(logits, dim=-1)
+            target_probs = probs.gather(-1, targets.unsqueeze(-1))
+            target_log_probs = target_probs.squeeze().log()
+            nll = -target_log_probs
+            sum_nll += nll.sum().item()
+            total += nll.size(0)
+        perplexity = math.exp(sum_nll / total)
+        return perplexity
+
