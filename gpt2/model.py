@@ -40,6 +40,56 @@ class SinusoidalPositionalEncoding(nn.Module):
         return self.pe[:, :len(x), :]
 
 
+class RotaryPositionalEmbedding(nn.Module):
+    """
+    Rotary Position Embedding (RoPE) from "RoFormer: Enhanced Transformer with Rotary Position Embedding"
+    https://arxiv.org/abs/2104.09864
+    
+    Applies rotary embeddings to query and key tensors.
+    """
+    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
+        super().__init__()
+        self.dim = dim
+        self.max_seq_len = max_seq_len
+        self.base = base
+        
+        # Precompute the frequency tensor
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+        
+        # Precompute cos and sin for all positions
+        t = torch.arange(max_seq_len, dtype=torch.float)
+        freqs = torch.outer(t, inv_freq)  # (max_seq_len, dim/2)
+        emb = torch.cat((freqs, freqs), dim=-1)  # (max_seq_len, dim)
+        self.register_buffer("cos_cached", emb.cos())
+        self.register_buffer("sin_cached", emb.sin())
+    
+    def rotate_half(self, x):
+        """Rotates half the hidden dims of the input."""
+        x1, x2 = x[..., :x.shape[-1] // 2], x[..., x.shape[-1] // 2:]
+        return torch.cat((-x2, x1), dim=-1)
+    
+    def forward(self, q, k, seq_len):
+        """
+        Apply rotary embeddings to query and key tensors.
+        
+        Args:
+            q: Query tensor of shape (B, nh, T, hs)
+            k: Key tensor of shape (B, nh, T, hs)
+            seq_len: Sequence length
+            
+        Returns:
+            Tuple of (rotated_q, rotated_k)
+        """
+        cos = self.cos_cached[:seq_len, :].unsqueeze(0).unsqueeze(0)  # (1, 1, T, dim)
+        sin = self.sin_cached[:seq_len, :].unsqueeze(0).unsqueeze(0)  # (1, 1, T, dim)
+        
+        q_embed = (q * cos) + (self.rotate_half(q) * sin)
+        k_embed = (k * cos) + (self.rotate_half(k) * sin)
+        
+        return q_embed, k_embed
+
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -54,9 +104,15 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        self.config = config
         # causal mask to ensure that attention is only applied to the left in the input sequence
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                     .view(1, 1, config.block_size, config.block_size))
+        
+        # Initialize RoPE if using rotary positional embeddings
+        if config.pe == PositionalEncoding.ROPE:
+            head_dim = config.n_embd // config.n_head
+            self.rope = RotaryPositionalEmbedding(head_dim, max_seq_len=config.block_size)
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -66,6 +122,10 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        # Apply RoPE if using rotary positional embeddings
+        if self.config.pe == PositionalEncoding.ROPE:
+            q, k = self.rope(q, k, T)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         att = (q @ k.transpose(-2, -1)) * (1.0 / torch.sqrt(torch.tensor(k.size(-1))))
