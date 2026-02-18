@@ -294,9 +294,8 @@ class GPT(nn.Module):
             targets = idx[:, start+1:end+1]
             idx_cond = idx[:, start:end]
             logits, _ = self(idx_cond, full=True)
-            probs = F.softmax(logits, dim=-1)
-            target_probs = probs.gather(-1, targets.unsqueeze(-1))
-            target_log_probs = target_probs.squeeze().log()
+            log_probs = F.log_softmax(logits, dim=-1)
+            target_log_probs = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
             nll = -target_log_probs
             sum_nll += nll.sum().item()
             total += nll.size(0)
