@@ -3,7 +3,7 @@ import os
 import torch
 import time
 from gpt2.data import get_data, get_batch
-from gpt2.model import GPTConfig, GPT
+from gpt2.model import GPTConfig, GPT, PositionalEncoding
 
 # Hyperparameters
 batch_size = 64
@@ -48,9 +48,12 @@ if __name__ == "__main__":
         n_head=n_head,
         n_embd=n_embd,
         dropout=dropout,
+        pe=PositionalEncoding.LEARNED,
     )
     model = GPT(config)
     model.to(device)
+
+    print("Positional encoding method:", config.pe.value)
 
     # optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -64,7 +67,7 @@ if __name__ == "__main__":
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
             # save the model
-            model_path = f"ckpt_{iter}.pt"
+            model_path = f"ckpt_{iter}_{config.pe.value}.pt"
             checkpoint = {
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
@@ -93,5 +96,6 @@ if __name__ == "__main__":
         'config': config,
         'iter_num': iter,
     }
-    print(f"saving checkpoint to ckpt.pt")
-    torch.save(checkpoint, 'ckpt.pt')
+    final_checkpoint = f'ckpt_{config.pe.value}.pt'
+    print(f"saving checkpoint to {final_checkpoint}")
+    torch.save(checkpoint, final_checkpoint)
