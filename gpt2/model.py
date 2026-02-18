@@ -11,6 +11,7 @@ class PositionalEncoding(Enum):
     ROPE = "rope"
     NOPE = "nope"
     SINUSOIDAL = "sinusoidal"
+    DROPE = "drope"  # Dynamic RoPE: train with RoPE, then switch to NoPE
 
 @dataclass
 class GPTConfig:
@@ -22,6 +23,7 @@ class GPTConfig:
     dropout: float = 0.2
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit faster and better
     pe: PositionalEncoding = PositionalEncoding.NOPE
+    drope_switch_step: int = 10  # Step at which to switch from RoPE to NoPE (for DRoPE)
 
 class SinusoidalPositionalEncoding(nn.Module):
     def __init__(self, config: GPTConfig):
@@ -109,12 +111,12 @@ class CausalSelfAttention(nn.Module):
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                     .view(1, 1, config.block_size, config.block_size))
         
-        # Initialize RoPE if using rotary positional embeddings
-        if config.pe == PositionalEncoding.ROPE:
+        # Initialize RoPE if using rotary positional embeddings or DRoPE
+        if config.pe in (PositionalEncoding.ROPE, PositionalEncoding.DROPE):
             head_dim = config.n_embd // config.n_head
             self.rope = RotaryPositionalEmbedding(head_dim, max_seq_len=config.block_size)
 
-    def forward(self, x):
+    def forward(self, x, current_step=0):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -124,7 +126,12 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         # Apply RoPE if using rotary positional embeddings
-        if self.config.pe == PositionalEncoding.ROPE:
+        # For DRoPE, only apply RoPE before the switch step
+        apply_rope = (
+            self.config.pe == PositionalEncoding.ROPE or 
+            (self.config.pe == PositionalEncoding.DROPE and current_step < self.config.drope_switch_step)
+        )
+        if apply_rope:
             q, k = self.rope(q, k, T)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
@@ -162,8 +169,8 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, current_step=0):
+        x = x + self.attn(self.ln_1(x), current_step)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -186,13 +193,16 @@ class GPT(nn.Module):
                 modules['wpe'] = nn.Embedding(config.block_size, config.n_embd)
             case PositionalEncoding.SINUSOIDAL:
                 modules['wpe'] = SinusoidalPositionalEncoding(config)
-            case PositionalEncoding.ROPE | PositionalEncoding.NOPE:
+            case PositionalEncoding.ROPE | PositionalEncoding.NOPE | PositionalEncoding.DROPE:
                 pass
 
         self.transformer = nn.ModuleDict(modules)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # weight tying
         self.transformer.wte.weight = self.lm_head.weight
+        
+        # Track current training step (for DRoPE)
+        self.current_step = 0
 
         # init all weights
         self.apply(self._init_weights)
@@ -202,6 +212,10 @@ class GPT(nn.Module):
     def get_num_params(self):
         n_params = sum(p.numel() for p in self.parameters())
         return n_params
+    
+    def set_step(self, step: int):
+        """Update the current training step (used for DRoPE)"""
+        self.current_step = step
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -220,7 +234,7 @@ class GPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         
-        if self.config.pe in (PositionalEncoding.ROPE, PositionalEncoding.NOPE):
+        if self.config.pe in (PositionalEncoding.ROPE, PositionalEncoding.NOPE, PositionalEncoding.DROPE):
             emb = tok_emb
         else:
             pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd) or (1, t, n_embd)
@@ -228,7 +242,7 @@ class GPT(nn.Module):
         
         x = self.transformer.drop(emb)
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, self.current_step)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
