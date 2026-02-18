@@ -16,3 +16,7 @@ wheels/
 notebooks/
 input.txt
 logs/
+
+# IDE
+.vscode
+.cursor
