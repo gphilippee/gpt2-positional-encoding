@@ -21,8 +21,8 @@ class GPTConfig:
     n_head: int = 6
     n_embd: int = 384
     dropout: float = 0.2
-    bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit faster and better
-    pe: PositionalEncoding = PositionalEncoding.NOPE
+    bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit faster and better
+    pe: PositionalEncoding = PositionalEncoding.LEARNED
     drope_switch_step: int = 10  # Step at which to switch from RoPE to NoPE (for DRoPE)
 
 class SinusoidalPositionalEncoding(nn.Module):
