@@ -15,3 +15,4 @@ wheels/
 # Others
 notebooks/
 input.txt
+logs/
